@@ -1,0 +1,10 @@
+{
+    "CONFIG_DB__DEVICE_METADATA": {
+        "localhost": {
+            "sub_role": "BackEnd"
+        }
+    },
+    "CONFIG_DB__LOOPBACK_INTERFACE": {
+        "Loopback4096|10.10.10.10/32": {}
+    }
+}
