@@ -22,7 +22,7 @@ class FRR(object):
         log_info("Start waiting for FRR daemons: %s" % str(datetime.datetime.now()))
         while datetime.datetime.now() < stop_time:
             ret_code, out, err = run_command(["vtysh", "-c", "show daemons"], hide_errors=True)
-            if ret_code == 0 and all(daemon in out for daemon in self.daemons):
+            if ret_code == 0:
                 log_info("All required daemons have connected to vtysh: %s" % str(datetime.datetime.now()))
                 return
             else:

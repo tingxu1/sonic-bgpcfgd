@@ -9,7 +9,12 @@ from .manager import Manager
 from .template import TemplateFabric
 from .utils import run_command
 from .managers_device_global import DeviceGlobalCfgMgr
+from .utils import run_command
+import ipaddress
+import time
+import redis
 
+appl_db = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
 class BGPPeerGroupMgr(object):
     """ This class represents peer-group and routing policy for the peer_type """
@@ -399,3 +404,123 @@ class BGPPeerMgrBase(Manager):
                 raise Exception("Can't read vrf '%s' neighbors: %s" % (vrf, str(err)))
 
         return peers
+
+
+class ComputeRtMgr(Manager):
+    """ This class updates the Directory object when db table is updated """
+    def __init__(self, common_objs, db, table):
+        """
+        Initialize the object
+        :param common_objs: common object dictionary
+        :param db: name of the db
+        :param table: name of the table in the db
+        """
+        super(ComputeRtMgr, self).__init__(
+            common_objs,
+            [],
+            db,
+            table,
+        )
+        self.save = {}
+
+    def set_handler(self, key, data):
+        """ Implementation of 'SET' command for this class """
+        print("detect add compute node route, key {} data {}".format(key, data))
+        v = ipaddress.ip_network(str(key), strict=False).version + ipaddress.ip_network(str(data["network"]), strict=False).version
+        if v == 4*2:
+            command = ["vtysh", "-c", "configure terminal" , "-c" , "ip route {} {} tag 6666".format(data["network"],key)]
+            self.save[key] = "ip route {} {} tag 6666".format(data["network"],key)
+        elif v == 6*2:
+            command = ["vtysh", "-c", "configure terminal" , "-c" , "ipv6 route {} {} tag 6666".format(data["network"],key)]
+            self.save[key] = "ipv6 route {} {} tag 6666".format(data["network"],key)
+        else:
+            log_err("ip and prefix are not the same ip version")
+            return False
+        ret_code, out, err = run_command(command)
+        if ret_code != 0:
+            err_tuple = str(command), ret_code, out, err
+            log_err("ComputeRtMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
+        return ret_code == 0
+
+    def del_handler(self, key):
+        """ Implementation of 'DEL' command for this class """
+        print("detect remove compute node route, key {}".format(key))
+        cmd = self.save.get(key,None)
+        if cmd:
+            self.save.pop(key)
+            command = ["vtysh", "-c", "configure terminal" , "-c" , "no " + cmd]
+            ret_code, out, err = run_command(command)
+            if ret_code != 0:
+                err_tuple = str(command), ret_code, out, err
+                log_err("ComputeRtMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
+
+
+class NetstatMgr(Manager):
+    """ This class updates the Directory object when db table is updated """
+    def __init__(self, common_objs, db, table):
+        """
+        Initialize the object
+        :param common_objs: common object dictionary
+        :param db: name of the db
+        :param table: name of the table in the db
+        """
+        super(NetstatMgr, self).__init__(
+            common_objs,
+            [],
+            db,
+            table,
+        )
+
+    def set_handler(self, key, data):
+        """ Implementation of 'SET' command for this class """
+        global appl_db
+        print("NetstatMgr key {} data {}".format(key,data))
+        # get value from COMPUTE_RESOURCE
+        try:
+            resource_dict = appl_db.hgetall("COMPUTE_RESOURCE:{}".format(key))
+            ip = resource_dict[u'internal_ip'].encode('utf-8')
+            cpu_num = resource_dict[u'cpu_num'].encode('utf-8')
+            ephemeral_storage = resource_dict[u'ephemeral_storage'].encode('utf-8')
+            hugepages_1gi = resource_dict[u'hugepages_1gi'].encode('utf-8')
+            hugepages_2mi = resource_dict[u'hugepages_2mi'].encode('utf-8')
+            mem_size = resource_dict[u'memory'].encode('utf-8')
+            pods = resource_dict[u'pods'].encode('utf-8')
+            delay = data['delay']
+        except:
+            log_err("Can't read from APPL_DB table COMPUTE_RESOURCE:{}".format(key))
+            return True
+        if delay == "forever":
+            return True
+        # give cmd to vtysh
+        command = ["vtysh", "-c", "configure terminal" , "-c" , "compute-list cl", "-c", "compute {} {} {} {} {} {} {} {}".format(ip, cpu_num, ephemeral_storage, hugepages_1gi, hugepages_2mi, mem_size, pods, delay)]
+        ret_code, out, err = run_command(command)
+        if ret_code != 0:
+            err_tuple = str(command), ret_code, out, err
+            log_err("NetstatMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
+        # update
+        community = "%.4f"%(time.time())
+        community = community.split('.')[0][-4:] + ':' + community.split('.')[1]
+        command = ["vtysh", "-c", "configure terminal" , "-c" , "route-map EnhencedGW p 100", "-c", "set community {}".format(community)]
+        ret_code, out, err = run_command(command)
+        if ret_code != 0:
+            err_tuple = str(command), ret_code, out, err
+            log_err("NetstatMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
+
+        return ret_code == 0
+
+    def del_handler(self, key):
+        """ Implementation of 'DEL' command for this class """
+        print("NetstatMgr key {}".format(key))
+        command = ["vtysh", "-c", "configure terminal" , "-c" , "compute-list cl", "-c", "no compute {}".format(key)]
+        ret_code, out, err = run_command(command)
+        if ret_code != 0:
+            err_tuple = str(command), ret_code, out, err
+            log_err("NetstatMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
+        # update
+        community = "%.4f"%(time.time())
+        community = community.split('.')[0][-4:] + ':' + community.split('.')[1]
+        command = ["vtysh", "-c", "configure terminal" , "-c" , "route-map EnhencedGW p 100", "-c", "set community {}".format(community)]
+        ret_code, out, err = run_command(command)
+        if ret_code != 0:
+            err_tuple = str(command), ret_code, out, err
+            log_err("NetstatMgr::push(): can't push configuration '%s', rc='%d', stdout='%s', stderr='%s'" % err_tuple)
